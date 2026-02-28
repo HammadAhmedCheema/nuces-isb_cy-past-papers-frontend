@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CONFIG } from './config';
+import { supabase } from './supabaseClient';
 
 // ===== PDF Page Component =====
 const STATIC_RENDER_SCALE = 2.0;
@@ -38,7 +39,12 @@ const PDFPage = ({ pdf, pageNum, scale }) => {
         setPageSize({ width: viewport.width, height: viewport.height });
       }
     });
-    return () => { active = false; };
+    return () => { 
+      active = false; 
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel();
+      }
+    };
   }, [pdf, pageNum]);
 
   useEffect(() => {
@@ -71,11 +77,20 @@ const PDFPage = ({ pdf, pageNum, scale }) => {
         await renderTaskRef.current.promise;
         setIsRendered(true);
       } catch (err) {
-        console.error('Page render error:', err);
+        if (err.name !== 'RenderingCancelledException') {
+          console.error('Page render error:', err);
+        }
       }
     };
 
     renderPage();
+    
+    // Cleanup if component unmounts mid-render
+    return () => {
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel();
+      }
+    };
   }, [pdf, pageNum, isVisible, isRendered]);
 
   return (
@@ -155,31 +170,24 @@ const App = () => {
   const [pdfRef, setPdfRef] = useState(null);
   const [displayScale, setDisplayScale] = useState(1.0);
   const [uploadStatus, setUploadStatus] = useState({ message: '', type: '' });
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const viewerRef = useRef(null);
 
   const fetchRepoFiles = async () => {
-    if (!CONFIG.GITHUB_TOKEN) {
-      setFetchError('Configuration Error: Credentials missing.');
-      return;
-    }
-    
     setIsLoading(true);
     setFetchError(null);
     
     try {
-      const response = await fetch(
-        `https://api.github.com/repos/${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}/git/trees/${CONFIG.GITHUB_BRANCH}?recursive=1`,
-        { headers: { 'Authorization': `Bearer ${CONFIG.GITHUB_TOKEN}` } }
-      );
-      
-      if (!response.ok) throw new Error('Failed to fetch archive');
-      
-      const data = await response.json();
-      setRawFiles(data.tree.filter(item => item.path.endsWith('.pdf')));
+      const { data, error } = await supabase
+        .from('papers')
+        .select('*');
+        
+      if (error) throw error;
+      setRawFiles(data);
     } catch (error) {
       console.error(error);
-      setFetchError('Uplink Interrupted: Unable to retrieve files.');
+      setFetchError('Uplink Interrupted: Unable to retrieve files from database.');
     } finally {
       setIsLoading(false);
     }
@@ -188,21 +196,45 @@ const App = () => {
   useEffect(() => { fetchRepoFiles(); }, []);
 
   const handleFileSelect = async (file) => {
+    // 🧹 Clean up previous object URL to prevent memory leaks
+    if (currentFile?.blobUrl) {
+      URL.revokeObjectURL(currentFile.blobUrl);
+    }
+    
     setPdfRef(null);
     setCurrentFile(file);
+    setIsSidebarOpen(false);
+    setDisplayScale(1.0); // 🔍 Reset zoom when changing files
+    
     try {
-      const response = await fetch(
-        `https://api.github.com/repos/${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}/contents/${file.path}`,
-        { headers: { 'Authorization': `Bearer ${CONFIG.GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' } }
-      );
-      const arrayBuffer = await response.arrayBuffer();
+      const { data, error } = await supabase
+        .storage
+        .from('pdfs')
+        .download(file.path);
+
+      if (error) throw error;
+
+      const arrayBuffer = await data.arrayBuffer();
       const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
       setPdfRef(pdf);
-      setCurrentFile({ ...file, blobUrl: URL.createObjectURL(new Blob([arrayBuffer], { type: 'application/pdf' })) });
+      setCurrentFile({ 
+        ...file, 
+        blobUrl: URL.createObjectURL(new Blob([arrayBuffer], { type: 'application/pdf' })) 
+      });
     } catch (error) {
-      console.error(error);
+      console.error('Failed to load PDF:', error);
     }
   };
+  
+  // Cleanup object URL on unmount
+  useEffect(() => {
+    return () => {
+      if (currentFile?.blobUrl) {
+        URL.revokeObjectURL(currentFile.blobUrl);
+      }
+    };
+  }, [currentFile]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -249,38 +281,60 @@ const App = () => {
     setUploadStatus({ message: 'Initializing...', type: 'loading' });
 
     try {
-      // Generate clean name without UUID
+      // Generate clean name
       const cleanSubject = subject.replace(/[^a-zA-Z0-9]/g, '');
       const name = `${examType}_${cleanSubject}_${session}_${year}.pdf`.toLowerCase();
       const targetPath = `${subject}/${examType}/${name}`.toLowerCase();
 
-      // Check if file already exists in rawFiles
-      const exists = rawFiles.some(f => f.path.toLowerCase() === targetPath);
+      // Check if file already exists in Supabase DB
+      const { data: existingData } = await supabase
+        .from('papers')
+        .select('id')
+        .eq('path', targetPath)
+        .single();
 
-      if (exists) {
+      if (existingData) {
         setUploadStatus({ message: 'Conflict: File already exists in archive.', type: 'error' });
         return;
       }
 
-      setUploadStatus({ message: 'Uploading...', type: 'loading' });
+      setUploadStatus({ message: 'Uploading file to storage...', type: 'loading' });
 
-      const reader = new FileReader();
-      const content = await new Promise((res) => {
-        reader.onload = () => res(reader.result.split(',')[1]);
-        reader.readAsDataURL(file);
-      });
+      // Upload to Supabase Storage
+      const { error: storageError } = await supabase.storage
+        .from('pdfs')
+        .upload(targetPath, file, {
+          cacheControl: '3600',
+          upsert: false // Fail if file exists in storage but not DB
+        });
 
-      const res = await fetch(`https://api.github.com/repos/${CONFIG.GITHUB_OWNER}/${CONFIG.GITHUB_REPO}/contents/${targetPath}`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${CONFIG.GITHUB_TOKEN}` },
-        body: JSON.stringify({ 
-          message: `Upload: ${name}`, 
-          content, 
-          branch: CONFIG.GITHUB_BRANCH 
-        })
-      });
+      if (storageError) {
+        if (storageError.statusCode === '409') {
+           setUploadStatus({ message: 'Conflict: File already exists in storage bucket.', type: 'error' });
+           return;
+        }
+        throw storageError;
+      }
 
-      if (!res.ok) throw new Error();
+      setUploadStatus({ message: 'Updating archive catalog...', type: 'loading' });
+
+      // Insert Metadata into DB Database
+      const { error: dbError } = await supabase
+        .from('papers')
+        .insert([{
+          name: name,
+          subject: subject,
+          exam_type: examType,
+          session: session,
+          year: parseInt(year),
+          path: targetPath
+        }]);
+        
+      if (dbError) {
+        // Cleanup storage on db failure
+        await supabase.storage.from('pdfs').remove([targetPath]);
+        throw dbError;
+      }
       
       setUploadStatus({ message: 'Uploaded successfully', type: 'success' });
       setTimeout(() => { 
@@ -289,7 +343,8 @@ const App = () => {
         setUploadStatus({ message: '', type: '' }); 
       }, 1500);
     } catch (e) { 
-      setUploadStatus({ message: 'Upload failed: Uploade interrupted.', type: 'error' }); 
+      console.error(e);
+      setUploadStatus({ message: 'Upload failed.', type: 'error' }); 
     }
   };
 
@@ -304,12 +359,38 @@ const App = () => {
     <div className="flex h-screen bg-cyber-black text-cyber-text-primary overflow-hidden font-hack relative">
       <div className="noise" />
       
+      {/* Mobile Sidebar Backdrop */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
-      <aside className="w-80 flex-shrink-0 flex flex-col border-r border-white/5 bg-cyber-darker relative z-30">
-        <div className="p-6">
-          <div className="flex items-center gap-3 mb-8">
-            <Archive className="text-cyber-accent" size={24} />
-            <h1 className="text-xl font-bold tracking-tight text-white">Cyber Archive</h1>
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 w-72 flex flex-col border-r border-white/5 bg-cyber-darker
+        transform transition-transform duration-300 ease-in-out
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        md:relative md:translate-x-0 md:w-80 md:flex-shrink-0 md:z-30
+      `}>
+        <div className="p-4 md:p-6">
+          <div className="flex items-center justify-between mb-6 md:mb-8">
+            <div className="flex items-center gap-3">
+              <Archive className="text-cyber-accent" size={24} />
+              <h1 className="text-lg md:text-xl font-bold tracking-tight text-white">Cyber Archive</h1>
+            </div>
+            <button 
+              className="md:hidden p-2 rounded-xl hover:bg-white/5 text-cyber-text-secondary hover:text-white transition-all"
+              onClick={() => setIsSidebarOpen(false)}
+            >
+              <X size={20} />
+            </button>
           </div>
           
           <div className="relative group">
@@ -322,7 +403,7 @@ const App = () => {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 pb-6 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-6 custom-scrollbar">
           {isLoading ? (
             <div className="space-y-4 pt-4">
               {[...Array(8)].map((_, i) => (
@@ -352,7 +433,7 @@ const App = () => {
           )}
         </div>
 
-        <div className="p-6 border-t border-white/5 bg-cyber-darker">
+        <div className="p-4 md:p-6 border-t border-white/5 bg-cyber-darker">
             <button 
               onClick={() => setIsUploadModalOpen(true)} 
               disabled={isLoading || !!fetchError}
@@ -370,33 +451,42 @@ const App = () => {
 
       {/* Main Content */}
       <main className="flex-1 relative flex flex-col min-w-0 bg-cyber-black">
+        {/* Mobile hamburger */}
+        <button 
+          className="md:hidden fixed top-4 left-4 z-30 w-10 h-10 flex items-center justify-center rounded-xl bg-cyber-darker border border-white/10 text-cyber-text-secondary hover:text-white transition-all shadow-lg"
+          onClick={() => setIsSidebarOpen(true)}
+        >
+          <Menu size={20} />
+        </button>
+
         <AnimatePresence mode="wait">
           {!currentFile ? (
-            <motion.div key="welcome" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex-1 flex flex-col items-center justify-center p-12 text-center">
-              <div className="w-28 h-28 mb-8 rounded-[2.5rem] bg-cyber-accent/10 flex items-center justify-center text-5xl shadow-inner border border-cyber-accent/20">
+            <motion.div key="welcome" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex-1 flex flex-col items-center justify-center p-6 md:p-12 text-center">
+              <div className="w-20 h-20 md:w-28 md:h-28 mb-6 md:mb-8 rounded-[2rem] md:rounded-[2.5rem] bg-cyber-accent/10 flex items-center justify-center text-4xl md:text-5xl shadow-inner border border-cyber-accent/20">
                 📚
               </div>
-              <h2 className="text-4xl font-black mb-4 tracking-tight text-white uppercase">Cyber Archive</h2>
-              <p className="text-cyber-text-secondary max-w-sm mx-auto mb-8 leading-relaxed text-sm font-medium">
+              <h2 className="text-2xl md:text-4xl font-black mb-3 md:mb-4 tracking-tight text-white uppercase">Cyber Archive</h2>
+              <p className="text-cyber-text-secondary max-w-sm mx-auto mb-6 md:mb-8 leading-relaxed text-xs md:text-sm font-medium">
                 Contribute to this repo by uploading if not uploaded already. Select a file from the sidebar to view.
               </p>
             </motion.div>
           ) : (
             <motion.div key="viewer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex-1 flex flex-col min-h-0">
-              <header className="flex items-center justify-between px-10 py-6 border-b border-white/5 bg-cyber-darker/50 backdrop-blur-md relative z-20">
-                <div className="flex items-center gap-5 min-w-0">
-                  <div className="w-12 h-12 rounded-2xl bg-cyber-accent/10 flex items-center justify-center text-cyber-accent border border-cyber-accent/20 shadow-lg shadow-cyber-accent/5">
-                    <FileText size={22} />
+              <header className="flex items-center justify-between px-4 py-3 md:px-10 md:py-6 border-b border-white/5 bg-cyber-darker/50 backdrop-blur-md relative z-20">
+                <div className="flex items-center gap-3 md:gap-5 min-w-0 ml-12 md:ml-0">
+                  <div className="w-9 h-9 md:w-12 md:h-12 rounded-xl md:rounded-2xl bg-cyber-accent/10 flex items-center justify-center text-cyber-accent border border-cyber-accent/20 shadow-lg shadow-cyber-accent/5 shrink-0">
+                    <FileText size={18} className="md:hidden" />
+                    <FileText size={22} className="hidden md:block" />
                   </div>
                   <div className="min-w-0">
-                    <h3 className="font-bold text-sm text-white truncate uppercase tracking-tight">{currentFile.name.replace('.pdf', '')}</h3>
+                    <h3 className="font-bold text-xs md:text-sm text-white truncate uppercase tracking-tight">{currentFile.name.replace('.pdf', '')}</h3>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 md:gap-3 shrink-0">
                   <motion.button 
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className="w-10 h-10 flex items-center justify-center rounded-xl bg-cyber-accent text-white shadow-[0_0_20px_rgba(232,17,122,0.3)] hover:shadow-[0_0_25px_rgba(232,17,122,0.5)] transition-all" 
+                    className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center rounded-xl bg-cyber-accent text-white shadow-[0_0_20px_rgba(232,17,122,0.3)] hover:shadow-[0_0_25px_rgba(232,17,122,0.5)] transition-all" 
                     onClick={() => { const a = document.createElement('a'); a.href = currentFile.blobUrl; a.download = currentFile.name; a.click(); }} 
                     title="Download"
                   >
@@ -404,15 +494,21 @@ const App = () => {
                       animate={{ y: [0, 2, 0] }}
                       transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
                     >
-                      <FileDown size={18} />
+                      <FileDown size={16} className="md:hidden" />
+                      <FileDown size={18} className="hidden md:block" />
                     </motion.div>
                   </motion.button>
-                  <div className="h-4 w-px bg-white/10 mx-1" />
-                  <button className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all shadow-lg shadow-red-500/10" onClick={() => setCurrentFile(null)}><X size={18} /></button>
+                  <div className="h-4 w-px bg-white/10 mx-0.5 md:mx-1" />
+                  <button className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all shadow-lg shadow-red-500/10" 
+                    onClick={() => {
+                        if (currentFile?.blobUrl) URL.revokeObjectURL(currentFile.blobUrl);
+                        setCurrentFile(null);
+                    }}
+                  ><X size={16} className="md:hidden" /><X size={18} className="hidden md:block" /></button>
                 </div>
               </header>
 
-              <div ref={viewerRef} className="flex-1 overflow-auto p-12 lg:p-20 custom-scrollbar bg-[#05070a]">
+              <div ref={viewerRef} className="flex-1 overflow-auto p-4 md:p-12 lg:p-20 custom-scrollbar bg-[#05070a]">
                 {!pdfRef ? (
                   <div className="h-full flex items-center justify-center text-cyber-text-secondary">
                     <RefreshCw size={24} className="animate-spin mr-3 opacity-20" />
@@ -427,15 +523,15 @@ const App = () => {
                 )}
               </div>
 
-              <footer className="px-10 py-5 border-t border-white/5 bg-cyber-darker/50 backdrop-blur-md flex items-center justify-between text-[11px] text-cyber-text-secondary">
+              <footer className="px-4 py-3 md:px-10 md:py-5 border-t border-white/5 bg-cyber-darker/50 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-0 text-[11px] text-cyber-text-secondary">
                 <div className="font-bold uppercase tracking-widest opacity-60">
                     Total Pages: {pdfRef?.numPages || 0}
                 </div>
-                <div className="flex items-center gap-8">
-                  <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 md:gap-8">
+                  <div className="flex items-center gap-3 md:gap-4">
                     <input 
                       type="range" min="0.5" max="3.0" step="0.01" value={displayScale} 
-                      className="w-40 h-1 bg-white/5 rounded-full accent-cyber-accent appearance-none cursor-pointer" 
+                      className="w-28 md:w-40 h-1 bg-white/5 rounded-full accent-cyber-accent appearance-none cursor-pointer" 
                       onChange={(e) => setDisplayScale(parseFloat(e.target.value))} 
                     />
                     <span className="min-w-[45px] font-mono text-cyber-accent font-black tabular-nums">{(displayScale * 100).toFixed(0)}%</span>
@@ -450,17 +546,17 @@ const App = () => {
       {/* Upload Modal */}
       <AnimatePresence>
         {isUploadModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm" onClick={() => setIsUploadModalOpen(false)}>
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} className="w-full max-w-lg bg-cyber-darker border border-white/5 shadow-2xl rounded-[2rem] p-8 relative overflow-hidden" onClick={e => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-sm" onClick={() => setIsUploadModalOpen(false)}>
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} className="w-full max-w-[95vw] sm:max-w-lg bg-cyber-darker border border-white/5 shadow-2xl rounded-2xl sm:rounded-[2rem] p-5 sm:p-8 relative overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="absolute -top-24 -right-24 w-48 h-48 bg-cyber-accent/10 blur-[80px]" />
               
-              <div className="flex items-center justify-between mb-10">
-                <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-2xl bg-cyber-accent flex items-center justify-center shadow-lg shadow-cyber-accent/20">
-                        <Plus className="text-white" size={24} />
+              <div className="flex items-center justify-between mb-6 sm:mb-10">
+                <div className="flex items-center gap-3 sm:gap-4">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-cyber-accent flex items-center justify-center shadow-lg shadow-cyber-accent/20">
+                        <Plus className="text-white" size={20} />
                     </div>
                     <div>
-                        <h2 className="text-xl font-bold text-white tracking-tight">Upload Document</h2>
+                        <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Upload Document</h2>
                     </div>
                 </div>
                 <button 
@@ -476,18 +572,36 @@ const App = () => {
                 </button>
               </div>
 
-              <form onSubmit={handleUpload} className="space-y-6">
-                <div className="grid grid-cols-2 gap-4">
+              <form onSubmit={handleUpload} className="space-y-4 sm:space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-cyber-text-secondary uppercase tracking-widest ml-1">Subject</label>
-                    <select name="subject" required className="cyber-input appearance-none">{CONFIG.SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}</select>
+                    <select id="subject-select" name="subject" required className="cyber-input appearance-none" onChange={(e) => {
+                      const isLab = e.target.value.toLowerCase().includes('lab');
+                      const typeSelect = document.getElementById('exam-type-select');
+                      if (typeSelect) {
+                        typeSelect.innerHTML = '';
+                        const options = isLab ? CONFIG.EXAM_TYPES_LAB : CONFIG.EXAM_TYPES_THEORY;
+                        options.forEach(opt => {
+                          const option = document.createElement('option');
+                          option.value = opt;
+                          option.text = opt;
+                          typeSelect.appendChild(option);
+                        });
+                      }
+                    }}>
+                      <option value="" disabled selected>Select Subject</option>
+                      {CONFIG.SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
                   </div>
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-cyber-text-secondary uppercase tracking-widest ml-1">Type</label>
-                    <select name="examType" required className="cyber-input appearance-none"><option value="Finals">Finals</option><option value="Sessional-1">Sessional-1</option><option value="Sessional-2">Sessional-2</option><option value="Labs">Labs</option></select>
+                    <select id="exam-type-select" name="examType" required className="cyber-input appearance-none">
+                      <option value="" disabled selected>Select Subject First</option>
+                    </select>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-cyber-text-secondary uppercase tracking-widest ml-1">Session</label>
                     <select name="session" required className="cyber-input appearance-none">{CONFIG.SESSIONS.map(s => <option key={s} value={s}>{s}</option>)}</select>
@@ -511,12 +625,12 @@ const App = () => {
                 </div>
 
                 {uploadStatus.message && (
-                  <div className={`p-4 rounded-xl text-xs font-bold border ${uploadStatus.type === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/10' : 'bg-green-500/10 text-green-400 border-green-500/10'}`}>
+                  <div className={`p-3 sm:p-4 rounded-xl text-xs font-bold border ${uploadStatus.type === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/10' : 'bg-green-500/10 text-green-400 border-green-500/10'}`}>
                     {uploadStatus.message}
                   </div>
                 )}
 
-                <button type="submit" disabled={uploadStatus.type === 'loading'} className="cyber-btn-primary w-full py-4 text-xs font-bold tracking-[0.2em] uppercase rounded-xl active:scale-95">
+                <button type="submit" disabled={uploadStatus.type === 'loading'} className="cyber-btn-primary w-full py-3.5 sm:py-4 text-xs font-bold tracking-[0.2em] uppercase rounded-xl active:scale-95">
                     {uploadStatus.type === 'loading' ? 'Encrypting Payload...' : 'Submit to Archive'}
                 </button>
               </form>

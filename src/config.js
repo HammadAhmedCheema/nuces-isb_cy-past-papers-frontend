@@ -1,10 +1,4 @@
 export const CONFIG = {
-  GITHUB_TOKEN: import.meta.env.VITE_GITHUB_TOKEN,
-  GITHUB_OWNER: import.meta.env.VITE_GITHUB_OWNER,
-  GITHUB_REPO: import.meta.env.VITE_GITHUB_REPO,
-  GITHUB_BRANCH: import.meta.env.VITE_GITHUB_BRANCH || 'main',
-  API_KEY: import.meta.env.VITE_API_KEY,
-  
   SUBJECTS: [
     "Applied Physics",
     "Artificial Intelligence",
