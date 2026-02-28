@@ -377,7 +377,7 @@ const App = () => {
     setAuthStatus({ message: 'Updating...', type: 'loading' });
 
     try {
-      const res = await fetch('/api/archive-api?action=update_password', {
+      const res = await fetch(`${API_URL}?action=update_password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
         body: JSON.stringify({ 
