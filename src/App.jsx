@@ -471,7 +471,7 @@ const App = () => {
 
     setDeleteStatus({ message: 'Purging from database and storage...', type: 'loading' });
     try {
-      const res = await fetch(`/api/archive-api?action=delete&path=${encodeURIComponent(fileToDelete.path)}`, {
+      const res = await fetch(`${API_URL}?action=delete&path=${encodeURIComponent(fileToDelete.path)}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${adminToken}` }
       });
