@@ -637,27 +637,35 @@ const App = () => {
 
         {/* Filter Pills */}
         <div className="px-4 md:px-6 pb-3">
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {['Sessional-1', 'Sessional-2', 'Finals'].map(t => (
-              <button
-                key={t}
-                onClick={() => setFilterExamType(prev => prev === t ? '' : t)}
-                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide transition-all border ${
-                  filterExamType === t
-                    ? 'bg-cyber-accent text-white border-cyber-accent shadow-sm shadow-cyber-accent/30'
-                    : 'bg-white/5 text-cyber-text-secondary border-white/5 hover:border-cyber-accent/30 hover:text-white'
-                }`}
-              >{t}</button>
-            ))}
-            {activeFilterCount > 0 && (
-              <button
-                onClick={() => setFilterExamType('')}
-                className="px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide transition-all border border-red-500/20 text-red-400 hover:bg-red-500/10 flex items-center gap-1 ml-auto"
-              >
-                <X size={9} /> Clear
-              </button>
-            )}
-          </div>
+          {isLoading ? (
+             <div className="flex gap-1.5 mb-2 mt-2">
+                <motion.div animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ repeat: Infinity, duration: 1.5 }} className="h-6 w-20 bg-white/5 rounded-lg border border-white/5" />
+                <motion.div animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ repeat: Infinity, duration: 1.5, delay: 0.2 }} className="h-6 w-20 bg-white/5 rounded-lg border border-white/5" />
+                <motion.div animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ repeat: Infinity, duration: 1.5, delay: 0.4 }} className="h-6 w-16 bg-white/5 rounded-lg border border-white/5" />
+             </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {['Sessional-1', 'Sessional-2', 'Finals'].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setFilterExamType(prev => prev === t ? '' : t)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide transition-all border ${
+                    filterExamType === t
+                      ? 'bg-cyber-accent text-white border-cyber-accent shadow-sm shadow-cyber-accent/30'
+                      : 'bg-white/5 text-cyber-text-secondary border-white/5 hover:border-cyber-accent/30 hover:text-white'
+                  }`}
+                >{t}</button>
+              ))}
+              {activeFilterCount > 0 && (
+                <button
+                  onClick={() => setFilterExamType('')}
+                  className="px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide transition-all border border-red-500/20 text-red-400 hover:bg-red-500/10 flex items-center gap-1 ml-auto"
+                >
+                  <X size={9} /> Clear
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-6 custom-scrollbar">
