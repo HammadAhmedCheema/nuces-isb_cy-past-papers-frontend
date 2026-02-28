@@ -5,6 +5,15 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --theme-accent-rgb: 232 17 122; /* Default Magenta/Pink */
+  }
+
+  /* Admin Green Theme Override */
+  .theme-admin {
+    --theme-accent-rgb: 16 185 129; /* Emerald/Green */
+  }
+
   body {
     @apply bg-cyber-black text-cyber-text-secondary font-hack overflow-hidden selection:bg-cyber-accent/40 selection:text-white;
   }

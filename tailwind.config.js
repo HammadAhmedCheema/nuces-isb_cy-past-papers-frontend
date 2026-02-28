@@ -11,7 +11,7 @@ export default {
           black: '#02040a',
           darker: '#0d1117',
           dark: '#161b22',
-          accent: '#e8117a', // Magenta/Pink from image
+          accent: 'rgb(var(--theme-accent-rgb) / <alpha-value>)',
           text: {
             primary: '#ffffff',
             secondary: '#7d8590',
