@@ -163,6 +163,9 @@ const SidebarItem = React.memo(({ item, level = 0, onSelect, activeFile }) => {
 });
 
 // ===== Main App Component =====
+const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/archive-api`;
+const ANON_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+
 const App = () => {
   const [rawFiles, setRawFiles] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -200,8 +203,9 @@ const App = () => {
     setFetchError(null);
     
     try {
-      const response = await fetch('/api/archive-api?action=list', {
-        method: 'GET'
+      const response = await fetch(`${API_URL}?action=list`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${adminToken || ANON_KEY}` }
       });
       if (!response.ok) throw new Error('Failed to fetch files');
       const data = await response.json();
@@ -220,7 +224,7 @@ const App = () => {
   const fetchQueue = async () => {
     if (!adminToken) return;
     try {
-      const res = await fetch('/api/archive-api?action=list_queue', {
+      const res = await fetch(`${API_URL}?action=list_queue`, {
         headers: { 'Authorization': `Bearer ${adminToken}` }
       });
       if (res.ok) {
@@ -244,8 +248,9 @@ const App = () => {
     setDisplayScale(1.0); // 🔍 Reset zoom when changing files
     
     try {
-      const response = await fetch(`/api/archive-api?action=download&path=${encodeURIComponent(file.path)}`, {
-        method: 'GET'
+      const response = await fetch(`${API_URL}?action=download&path=${encodeURIComponent(file.path)}`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${adminToken || ANON_KEY}` }
       });
 
       if (!response.ok) throw new Error('Failed to download PDF');
@@ -340,9 +345,9 @@ const App = () => {
     setAuthStatus({ message: 'Authenticating...', type: 'loading' });
 
     try {
-      const res = await fetch('/api/archive-api?action=login', {
+      const res = await fetch(`${API_URL}?action=login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ANON_KEY}` },
         body: JSON.stringify({ username, password })
       });
       const data = await res.json();
@@ -405,7 +410,7 @@ const App = () => {
     setDisplayScale(1.0);
     setIsLoadingQueue(true);
     try {
-      const response = await fetch(`/api/archive-api?action=download_queue&path=${encodeURIComponent(file.path)}`, {
+      const response = await fetch(`${API_URL}?action=download_queue&path=${encodeURIComponent(file.path)}`, {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${adminToken}` }
       });
@@ -426,13 +431,13 @@ const App = () => {
     try {
       let res;
       if (type === 'approve') {
-        res = await fetch('/api/archive-api?action=approve', {
+        res = await fetch(`${API_URL}?action=approve`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
           body: JSON.stringify({ path: file.path })
         });
       } else {
-        res = await fetch(`/api/archive-api?action=reject&path=${encodeURIComponent(file.path)}`, {
+        res = await fetch(`${API_URL}?action=reject&path=${encodeURIComponent(file.path)}`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${adminToken}` }
         });
@@ -541,13 +546,12 @@ const App = () => {
 
       setUploadStatus({ message: 'Uploading...', type: 'loading' });
 
-      // The Vite proxy automatically injects the Anon Auth header if no other Custom Admin Authorization is provided
-      const headers = {};
-      if (isAdminRoute && adminToken) {
-          headers['Authorization'] = `Bearer ${adminToken}`;
-      }
+      // Determine if they are an admin doing a direct upload or public
+      const headers = Object.assign({},
+        (isAdminRoute && adminToken) ? { 'Authorization': `Bearer ${adminToken}` } : { 'Authorization': `Bearer ${ANON_KEY}` }
+      );
 
-      const response = await fetch('/api/archive-api?action=upload', {
+      const response = await fetch(`${API_URL}?action=upload`, {
         method: 'POST',
         headers: headers,
         body: uploadData
