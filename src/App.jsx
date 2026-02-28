@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CONFIG } from './config';
-import { supabase } from './supabaseClient';
+
 
 // ===== PDF Page Component =====
 const STATIC_RENDER_SCALE = 2.0;
@@ -179,12 +179,12 @@ const App = () => {
     setFetchError(null);
     
     try {
-      const { data, error } = await supabase
-        .from('papers')
-        .select('*');
-        
-      if (error) throw error;
-      setRawFiles(data);
+      const response = await fetch('/api/getSubjects');
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const { subjects } = await response.json();
+      setRawFiles(subjects.map(subject => ({ subject })));
     } catch (error) {
       console.error(error);
       setFetchError('Uplink Interrupted: Unable to retrieve files from database.');
@@ -207,14 +207,13 @@ const App = () => {
     setDisplayScale(1.0); // 🔍 Reset zoom when changing files
     
     try {
-      const { data, error } = await supabase
-        .storage
-        .from('pdfs')
-        .download(file.path);
-
-      if (error) throw error;
-
-      const arrayBuffer = await data.arrayBuffer();
+      // Assuming file.url is available from our updated data structure
+      const response = await fetch(`/api/download/${file.id}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const arrayBuffer = await response.arrayBuffer();
       const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
       setPdfRef(pdf);
@@ -281,67 +280,35 @@ const App = () => {
     setUploadStatus({ message: 'Initializing...', type: 'loading' });
 
     try {
-      // Generate clean name
-      const cleanSubject = subject.replace(/[^a-zA-Z0-9]/g, '');
-      const name = `${examType}_${cleanSubject}_${session}_${year}.pdf`.toLowerCase();
-      const targetPath = `${subject}/${examType}/${name}`.toLowerCase();
+      // Prepare form data for serverless function
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('subject', subject);
+      formData.append('exam_type', examType);
+      formData.append('session', session);
+      formData.append('year', year);
 
-      // Check if file already exists in Supabase DB
-      const { data: existingData } = await supabase
-        .from('papers')
-        .select('id')
-        .eq('path', targetPath)
-        .single();
+      setUploadStatus({ message: 'Uploading file to server...', type: 'loading' });
 
-      if (existingData) {
-        setUploadStatus({ message: 'Conflict: File already exists in archive.', type: 'error' });
-        return;
+      const response = await fetch('/api/uploadPaper', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Upload failed');
       }
 
-      setUploadStatus({ message: 'Uploading file to storage...', type: 'loading' });
-
-      // Upload to Supabase Storage
-      const { error: storageError } = await supabase.storage
-        .from('pdfs')
-        .upload(targetPath, file, {
-          cacheControl: '3600',
-          upsert: false // Fail if file exists in storage but not DB
-        });
-
-      if (storageError) {
-        if (storageError.statusCode === '409') {
-           setUploadStatus({ message: 'Conflict: File already exists in storage bucket.', type: 'error' });
-           return;
-        }
-        throw storageError;
+      const result = await response.json();
+      if (result.success) {
+        setUploadStatus({ message: 'Uploaded successfully', type: 'success' });
+        setTimeout(() => { 
+          setIsUploadModalOpen(false); 
+          fetchRepoFiles(); 
+          setUploadStatus({ message: '', type: '' }); 
+        }, 1500);
       }
-
-      setUploadStatus({ message: 'Updating archive catalog...', type: 'loading' });
-
-      // Insert Metadata into DB Database
-      const { error: dbError } = await supabase
-        .from('papers')
-        .insert([{
-          name: name,
-          subject: subject,
-          exam_type: examType,
-          session: session,
-          year: parseInt(year),
-          path: targetPath
-        }]);
-        
-      if (dbError) {
-        // Cleanup storage on db failure
-        await supabase.storage.from('pdfs').remove([targetPath]);
-        throw dbError;
-      }
-      
-      setUploadStatus({ message: 'Uploaded successfully', type: 'success' });
-      setTimeout(() => { 
-        setIsUploadModalOpen(false); 
-        fetchRepoFiles(); 
-        setUploadStatus({ message: '', type: '' }); 
-      }, 1500);
     } catch (e) { 
       console.error(e);
       setUploadStatus({ message: 'Upload failed.', type: 'error' }); 
