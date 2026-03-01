@@ -188,6 +188,13 @@ const App = () => {
   const [displayScale, setDisplayScale] = useState(1.0);
   const [uploadStatus, setUploadStatus] = useState({ message: '', type: '' });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Queue state (admin only)
   const [queuedFiles, setQueuedFiles] = useState([]);
@@ -289,7 +296,8 @@ const App = () => {
     const handleWheel = (e) => {
       if (e.ctrlKey) {
         e.preventDefault();
-        setDisplayScale(prev => Math.min(Math.max(prev + (-e.deltaY * 0.01), 0.5), 3.0));
+        // Limit minimum scale to 1.0 so UI percentage never drops below 0%
+        setDisplayScale(prev => Math.min(Math.max(prev + (-e.deltaY * 0.01), 1.0), 3.0));
       }
     };
     viewer.addEventListener('wheel', handleWheel, { passive: false });
@@ -906,7 +914,7 @@ const App = () => {
                 ) : (
                   <div className="max-w-fit mx-auto flex flex-col items-center">
                     {[...Array(pdfRef.numPages)].map((_, i) => (
-                      <PDFPage key={`${currentFile.path}-${i}`} pdf={pdfRef} pageNum={i + 1} scale={displayScale} />
+                      <PDFPage key={`${currentFile.path}-${i}`} pdf={pdfRef} pageNum={i + 1} scale={isMobile ? displayScale * 0.5 : displayScale} />
                     ))}
                   </div>
                 )}
