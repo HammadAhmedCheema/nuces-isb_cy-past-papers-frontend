@@ -21,12 +21,13 @@ import {
   ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { CONFIG } from './config';
 
 // ===== PDF Page Component =====
 const STATIC_RENDER_SCALE = 2.0;
 
-const PDFPage = React.memo(({ pdf, pageNum, scale }) => {
+const PDFPage = React.memo(({ pdf, pageNum }) => {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const renderTaskRef = useRef(null);
@@ -99,18 +100,14 @@ const PDFPage = React.memo(({ pdf, pageNum, scale }) => {
   return (
     <div 
       ref={containerRef}
-      className="mb-8 last:mb-0"
+      className="mb-6 last:mb-0 relative shadow-2xl overflow-hidden rounded-sm"
       style={{ 
         opacity: isRendered ? 1 : 0.4,
-        width: pageSize.width ? `${pageSize.width}px` : '100%',
-        height: pageSize.height ? `${pageSize.height}px` : 'auto',
-        transform: `scale(${scale})`,
-        transformOrigin: 'top center'
+        aspectRatio: pageSize.width && pageSize.height ? `${pageSize.width} / ${pageSize.height}` : '1 / 1.414',
+        width: pageSize.width ? `${pageSize.width}px` : '800px'
       }}
     >
-      <div className="w-full h-full bg-white shadow-2xl overflow-hidden rounded-sm">
-        <canvas ref={canvasRef} className="block w-full h-full pointer-events-none" />
-      </div>
+      <canvas ref={canvasRef} className="block w-full h-full pointer-events-none bg-white" />
     </div>
   );
 });
@@ -178,7 +175,7 @@ const App = () => {
   // Custom Routing
   const isAdminRoute = window.location.pathname === '/admin';
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(isAdminRoute && !localStorage.getItem('adminToken'));
-  
+
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [adminToken, setAdminToken] = useState(localStorage.getItem('adminToken') || null);
   const [authStatus, setAuthStatus] = useState({ message: '', type: '' });
@@ -191,11 +188,39 @@ const App = () => {
   const [uploadStatus, setUploadStatus] = useState({ message: '', type: '' });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  const [isCtrlPressed, setIsCtrlPressed] = useState(false);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => { if (e.key === 'Control' || e.metaKey || e.ctrlKey) setIsCtrlPressed(true); };
+    const handleKeyUp = (e) => { if (!e.ctrlKey && !e.metaKey) setIsCtrlPressed(false); };
+    const handleBlur = () => setIsCtrlPressed(false);
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  // Block native browser zooming when using Ctrl + Wheel to allow react-zoom-pan-pinch to take over seamlessly
+  useEffect(() => {
+    const handleGlobalWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    // Non-passive listener removes browser's native continuous zoom capability, giving us full control
+    window.addEventListener('wheel', handleGlobalWheel, { passive: false });
+    return () => window.removeEventListener('wheel', handleGlobalWheel);
   }, []);
 
   // Queue state (admin only)
@@ -254,7 +279,6 @@ const App = () => {
     setPdfRef(null);
     setCurrentFile(file);
     setIsSidebarOpen(false);
-    setDisplayScale(1.0); // 🔍 Reset zoom when changing files
     
     try {
       const response = await fetch(`${API_URL}?action=download&path=${encodeURIComponent(file.path)}`, {
@@ -290,20 +314,6 @@ const App = () => {
         URL.revokeObjectURL(currentFile.blobUrl);
       }
     };
-  }, [currentFile]);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    const handleWheel = (e) => {
-      if (e.ctrlKey) {
-        e.preventDefault();
-        // Limit minimum scale to 1.0 so UI percentage never drops below 0%
-        setDisplayScale(prev => Math.min(Math.max(prev + (-e.deltaY * 0.01), 1.0), 3.0));
-      }
-    };
-    viewer.addEventListener('wheel', handleWheel, { passive: false });
-    return () => viewer.removeEventListener('wheel', handleWheel);
   }, [currentFile]);
 
   const treeData = useMemo(() => {
@@ -907,36 +917,60 @@ const App = () => {
                 </div>
               </header>
 
-              <div ref={viewerRef} className="flex-1 overflow-auto p-4 md:p-12 lg:p-20 custom-scrollbar bg-[#05070a]">
+              <div ref={viewerRef} className="flex-1 flex flex-col overflow-hidden relative bg-[#05070a]">
                 {(!pdfRef || isLoadingQueue) ? (
-                  <div className="h-full flex items-center justify-center text-cyber-text-secondary">
+                  <div className="flex-1 flex items-center justify-center text-cyber-text-secondary">
                     <RefreshCw size={24} className="animate-spin mr-3 opacity-20" />
                     <span>Loading Document...</span>
                   </div>
                 ) : (
-                  <div className="max-w-fit mx-auto flex flex-col items-center">
-                    {[...Array(pdfRef.numPages)].map((_, i) => (
-                      <PDFPage key={`${currentFile.path}-${i}`} pdf={pdfRef} pageNum={i + 1} scale={isMobile ? displayScale * 0.5 : displayScale} />
-                    ))}
-                  </div>
+                <TransformWrapper
+                  initialScale={isMobile ? 0.5 : 1.0}
+                  minScale={isMobile ? 0.1 : 0.5}
+                  maxScale={isMobile ? 1.5 : 3.0}
+                  wheel={{ 
+                    step: 0.5,          // Lower value = more responsive (range: 0-1)
+                    wheelDisabled: !isCtrlPressed,
+                    smooth: true        // Enable smooth zooming
+                  }}
+                  pinch={{
+                    disabled: false,
+                    step: 0.5,          // Add pinch step - lower = more responsive
+                    wheelZoom: false
+                  }}
+                  zoomAnimation={{ 
+                    disabled: false,    // Enable smooth animations
+                    animationTime: 0.2  // Faster animation
+                  }}
+                  limitToBounds={false}
+                  onZoom={(ref) => setDisplayScale(isMobile ? ref.state.scale * 2 : ref.state.scale)}
+                  onInit={(ref) => setDisplayScale(isMobile ? ref.state.scale * 2 : ref.state.scale)}
+                >
+                        <>
+                          <TransformComponent 
+                            wrapperClass="!w-full !h-full custom-scrollbar" 
+                            wrapperStyle={{ overflowY: 'auto' }}
+                            contentClass="flex flex-col items-center justify-start min-w-full pb-32"
+                          >
+                            {[...Array(pdfRef.numPages)].map((_, i) => (
+                              <PDFPage key={`${currentFile.path}-${i}`} pdf={pdfRef} pageNum={i + 1} />
+                            ))}
+                          </TransformComponent>
+
+                          <footer className="px-4 py-3 md:px-10 md:py-5 border-t border-white/5 bg-cyber-darker/50 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-0 text-[11px] text-cyber-text-secondary">
+                            <div className="font-bold uppercase tracking-widest opacity-60">
+                                Total Pages: {pdfRef?.numPages || 0}
+                            </div>
+                            <div className="flex items-center gap-4 md:gap-8">
+                              <div className="flex items-center gap-3 md:gap-4">
+                                <span className="min-w-[45px] font-mono text-cyber-accent font-black tabular-nums">{Math.min(Math.max(Math.round((displayScale - 1) * 100), 0), 200)}%</span>
+                              </div>
+                            </div>
+                          </footer>
+                        </>
+                  </TransformWrapper>
                 )}
               </div>
-
-              <footer className="px-4 py-3 md:px-10 md:py-5 border-t border-white/5 bg-cyber-darker/50 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 sm:gap-0 text-[11px] text-cyber-text-secondary">
-                <div className="font-bold uppercase tracking-widest opacity-60">
-                    Total Pages: {pdfRef?.numPages || 0}
-                </div>
-                <div className="flex items-center gap-4 md:gap-8">
-                  <div className="flex items-center gap-3 md:gap-4">
-                    <input 
-                      type="range" min="0" max="200" step="1" value={Math.round((displayScale - 1) * 100)} 
-                      className="w-28 md:w-40 h-1 bg-white/5 rounded-full accent-cyber-accent appearance-none cursor-pointer" 
-                      onChange={(e) => setDisplayScale(1 + (parseInt(e.target.value) / 100))} 
-                    />
-                    <span className="min-w-[45px] font-mono text-cyber-accent font-black tabular-nums">{Math.round((displayScale - 1) * 100)}%</span>
-                  </div>
-                </div>
-              </footer>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1255,3 +1289,5 @@ const App = () => {
 };
 
 export default App;
+
+
