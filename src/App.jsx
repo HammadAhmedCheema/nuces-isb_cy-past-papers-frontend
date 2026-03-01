@@ -102,8 +102,10 @@ const PDFPage = React.memo(({ pdf, pageNum, scale }) => {
       className="mb-8 last:mb-0"
       style={{ 
         opacity: isRendered ? 1 : 0.4,
-        width: pageSize.width ? `${pageSize.width * scale}px` : '100%',
-        height: pageSize.height ? `${pageSize.height * scale}px` : 'auto'
+        width: pageSize.width ? `${pageSize.width}px` : '100%',
+        height: pageSize.height ? `${pageSize.height}px` : 'auto',
+        transform: `scale(${scale})`,
+        transformOrigin: 'top center'
       }}
     >
       <div className="w-full h-full bg-white shadow-2xl overflow-hidden rounded-sm">
