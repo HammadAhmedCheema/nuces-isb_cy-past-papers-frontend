@@ -942,7 +942,7 @@ const App = () => {
                     disabled: false,    // Enable smooth animations
                     animationTime: 0.2  // Faster animation
                   }}
-                  limitToBounds={false}
+                  limitToBounds={true}
                   onZoom={(ref) => setDisplayScale(isMobile ? ref.state.scale * 2 : ref.state.scale)}
                   onInit={(ref) => setDisplayScale(isMobile ? ref.state.scale * 2 : ref.state.scale)}
                 >
